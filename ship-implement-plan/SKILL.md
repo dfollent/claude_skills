@@ -1,22 +1,21 @@
 ---
-name: implement-plan
-description: Execute an implementation plan phase by phase, with verification between phases and pauses for manual testing. Consumes the plan from /create-plan.
-attribution: Derived from HumanLayer's implement_plan (https://github.com/humanlayer/humanlayer/blob/main/.claude/commands/implement_plan.md) — Apache 2.0
+name: ship-implement-plan
+description: Execute an implementation plan phase by phase, with verification between phases and pauses for manual testing. Consumes the plan from /ship-create-plan, or runs as Ship pipeline stage 6 (the plan from /ship-create-plan).
 triggers:
-  - /implement-plan
+  - /ship-implement-plan
 model: opus
 ---
 
 # Implement Plan
 
-Triggered by: `/implement-plan [plan-file]`
-Example: `/implement-plan 2026-04-14-SP-42-plan.md`
+Triggered by: `/ship-implement-plan [plan-file]`
+Example: `/ship-implement-plan 2026-04-14-SP-42-plan.md`
 
-Execute an approved implementation plan phase by phase. The plan was produced by `/create-plan` and already incorporates decisions from the design discussion and structure outline. Your job is to follow the plan's intent, verify as you go, and pause for human checks between phases.
+Execute an approved implementation plan phase by phase. The plan was produced by `/ship-create-plan` and already incorporates decisions from the design discussion and work breakdown. Your job is to follow the plan's intent, verify as you go, and pause for human checks between phases.
 
 ## Inputs
 
-A plan file (output from `/create-plan`). Read it fully. Also read the design discussion referenced in the plan header - it contains the patterns to follow.
+A plan file (output from `/ship-create-plan`). Read it fully. Also read the design discussion referenced in the plan header - it contains the patterns to follow.
 
 If no plan file is provided, ask for one.
 
@@ -42,23 +41,16 @@ For each phase:
 
 After completing a phase, run the automated verification listed in the plan (tests, types, lint). Fix issues before proceeding.
 
-Then pause:
+Then git commit all changes from the phase (excluding the plan file itself). Use a concise commit message describing the phase intent.
 
-```
-Phase [N] complete - ready for manual verification.
+Then pause using the `AskUserQuestion` tool with:
+- A summary of what was completed and what automated checks passed
+- The manual verification steps from the plan listed as the question
+- Options: "Ready - proceed to Phase [N+1]" and "Issues found - hold"
 
-Automated checks passed:
-- [list what passed]
+Do not proceed until the user confirms via the tool response. Do not check off manual verification items yourself.
 
-Manual verification needed:
-- [list manual checks from the plan]
-
-Let me know when manual testing is done so I can proceed to Phase [N+1].
-```
-
-Do not proceed until the user confirms. Do not check off manual verification items yourself.
-
-If instructed to run multiple phases consecutively, skip the pause until the last phase.
+If instructed to run multiple phases consecutively, skip the pause and commit until the last phase.
 
 ### Step 4: Handle mismatches
 
@@ -77,6 +69,12 @@ Options:
 
 Do not silently work around mismatches. The plan was built on specific assumptions from the design discussion - if those assumptions are wrong, the human needs to know.
 
+### Step 5: Close out the Ship stage (only if applicable)
+
+This skill is Ship pipeline stage 6. If the plan file lives inside a `*-ship/` folder that contains a `manifest.md`, then after ALL phases are complete and verified, mark the `Implement plan` stage `done` in that `manifest.md` (see `_ship-shared/manifest-format.md`). This is the ONLY manifest write this skill makes, and it is single-threaded (implementation runs in one thread).
+
+For standalone runs (no `*-ship/` manifest), skip this step entirely - there is nothing to update.
+
 ## Rules
 
 - **TDD: write failing tests first.** Then implement to make them pass.
@@ -85,3 +83,4 @@ Do not silently work around mismatches. The plan was built on specific assumptio
 - **No new patterns.** Use the patterns from the design discussion. If they don't fit, that's a mismatch to surface, not a judgment call to make alone.
 - **One phase at a time.** Complete and verify before moving on.
 - **Stay under 40 instructions total.**
+- **Do not git commit the plan file itself.**
