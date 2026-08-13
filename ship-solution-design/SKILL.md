@@ -42,18 +42,32 @@ this task. Extract 3-5 concrete snippets (with file:line) the implementation sho
 
 Replace a light "open questions" step with an INTERACTIVE walk. Draw on `grill-me`:
 
-- Ask ONE question at a time. For each: FIRST write the question + recommended answer + branch
-  to `design-questions.md` (leave chosen answer blank), THEN present it to the user. Writing
-  before asking lets the team share the doc and collaborate on the answer.
+- Ask ONE question at a time. For each: FIRST write the question to `design-questions.md`, THEN
+  present it to the user. Writing before asking lets the team share the doc and collaborate on
+  the answer. Each question's entry uses this format (lettered options, recommended one marked,
+  blank `Answer:` line):
+
+  ```markdown
+  ### Q<n>. <question>
+  <optional 1-2 line context>
+  - **A.** <option> _(recommended)_ — <reasoning>
+  - **B.** <option> — <reasoning / what changes if chosen>
+  - **C.** <option> — <reasoning>
+  Answer:
+  ```
+
+  Exactly one option carries the `_(recommended)_` marker. List the recommended option FIRST (as
+  `A`). The `Answer:` line is left blank until settled.
 - Walk down the decision tree, resolving dependencies between decisions one-by-one.
 - If a question can be answered by exploring the codebase, explore instead of asking.
 - **Span the coverage map**: the walk must touch every RELEVANT dimension. Start with
   product/requirements (technical decisions depend on it - dependency ordering, not ritual).
 - **On reversal**: if the user reverses an earlier answer, INVALIDATE downstream answers on that
   branch and re-walk them.
-- **Update** each question's entry in `design-questions.md` with the chosen answer once the
-  user (or team) settles it. The question + recommended answer + branch were already written
-  before asking (see above); the chosen answer is filled in here.
+- **Update** each question's `Answer:` line in `design-questions.md` with the settled option
+  (e.g. `Answer: A`, optionally with a short note) once the user (or team) settles it. The
+  question + lettered options were already written before asking (see above); only `Answer:` is
+  filled in here.
 - **Pause/resume**: support async team fill-out. The user can leave and say "done" to resume.
 - **Stop condition** (offer to stop ONLY when ALL hold): every relevant dimension touched AND
   >=8 questions asked AND 3 consecutive questions where the user took the recommendation. Then

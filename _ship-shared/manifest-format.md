@@ -17,6 +17,9 @@ All artifacts for one ticket live in a single folder at the workspace root:
   kebab-case `<slug>-ship/` describing the work.
 - The folder holds `manifest.md` plus ALL artifacts. Filenames inside the folder DROP the
   ticket prefix (e.g. `design.md`, not `PLAT-1000-design.md`).
+- `.research-parts/` is a TRANSIENT subfolder: when `ship-research-codebase` splits a repo across
+  agents, each writes a `<repo>-<slice>.md` fragment there, and the repo's synthesis agent deletes
+  that repo's fragments once `research-<repo>.md` is written. Not an artifact; expect it empty/absent.
 
 ### Folder resolution (every skill + the dispatcher)
 
@@ -100,25 +103,25 @@ Workspace root: <absolute path>
 ### Research rows are a DERIVED VIEW
 
 Each `Research (repo: <name>)` row is reconciled from artifact presence:
-`research-<repo>.md` exists ⇒ `done`. Research artifact producers (Workflow research/synthesis
-agents + standalone single-repo runs) NEVER write `manifest.md` — this is what keeps research
-parallel-safe across terminals. Only the multi-repo orchestrator persists the reconciled rows,
-and only after every artifact has landed.
+`research-<repo>.md` exists ⇒ `done`. Research artifact producers (research/synthesis agents +
+standalone single-repo runs) NEVER write `manifest.md` — this is what keeps research
+parallel-safe across terminals. Only a dispatching research main thread persists the reconciled
+rows, and only after every artifact has landed.
 
 ## Single-writer rule
 
 `manifest.md` is written ONLY by single-threaded contexts:
 - `ship-generate-questions`
-- the `ship-research-codebase` multi-repo ORCHESTRATOR (its main thread, single-threaded), ONLY to
-  persist the `Research (repo: <name>)` reconcile after every `research-<repo>.md` has landed
+- a `ship-research-codebase` DISPATCHING main thread (single-threaded), ONLY to persist the
+  `Research (repo: <name>)` reconcile after every `research-<repo>.md` has landed
 - the planning trio (`ship-solution-design`, `ship-work-breakdown`, `ship-create-plan`)
 - `ship-implement-plan` (ONLY to mark the `Implement plan` stage `done`, and ONLY when its plan file
   lives inside a `*-ship/` folder; standalone runs never touch a manifest)
 - dispatcher transitions
 
-Workflow research/synthesis agents and standalone single-repo research runs are PURE artifact
-producers and MUST NOT write `manifest.md`. The multi-repo orchestrator above is the sole
-research-stage writer, and only post-completion.
+Research/synthesis agents and standalone single-repo research runs are PURE artifact producers
+and MUST NOT write `manifest.md`. The dispatching main thread above is the sole research-stage
+writer, and only post-completion.
 
 ### Reconcile (idempotent)
 

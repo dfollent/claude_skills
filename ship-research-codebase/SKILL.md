@@ -1,6 +1,6 @@
 ---
 name: ship-research-codebase
-description: Ship pipeline stage 2. Research and document the codebase as-is, driven by per-repo research-questions files. Researches one repo in-thread, or all pending repos in parallel via an orchestrated Workflow fan-out (one agent per question theme). Writes research-<repo>.md per repo into the per-ticket manifest folder. Pure codebase archaeology - no opinions, no implementation suggestions. Never sees the ticket.
+description: Ship pipeline stage 2. Research and document the codebase as-is, driven by per-repo research-questions files. Defaults to ONE research agent per repo (orientation dominates cost, so questions are batched), splitting only when a repo's questions span disjoint subsystems. Writes research-<repo>.md per repo into the per-ticket manifest folder. Pure codebase archaeology - no opinions, no implementation suggestions. Never sees the ticket.
 triggers:
   - /ship-research-codebase
 model: opus
@@ -17,17 +17,23 @@ research document usable in a fresh context window.
 This prevents implementation bias from coloring findings. Repo selection is already done upstream
 by `ship-generate-questions`; this skill never sees the ticket.
 
-This stage researches EVERY pending repo in the confirmed scope. With MORE THAN ONE pending repo
-it orchestrates an in-thread Workflow fan-out: the main thread stays a lean orchestrator while the
-heavy findings live in subagent contexts and on disk, never in the orchestrator. With EXACTLY ONE
-pending repo it researches in-thread directly. Either way it writes `research-<repo>.md` per repo,
-and the Workflow research/synthesis agents NEVER write `manifest.md`.
+This stage researches EVERY pending repo in the confirmed scope, then writes `research-<repo>.md`
+per repo.
 
 Standalone fallback (still supported): you may instead run this once per repo in separate
 terminals (one repo each). Those runs stay PURE ARTIFACT PRODUCERS — they write only
 `research-<repo>.md` and never `manifest.md`, which keeps them parallel-safe.
 
 Folder + manifest conventions: `~/.claude/skills/_ship-shared/manifest-format.md`.
+
+## Cost model (read before deciding how many agents to spawn)
+
+An agent's cost is dominated by ORIENTATION — reading `CLAUDE.md`, mapping the repo, locating the
+subsystems — not by how many questions it then answers. Once oriented, each extra question is
+cheap. A second agent pointed at the same subsystem pays orientation twice and buys nothing.
+
+Therefore: **batch questions into as few agents as possible.** Splitting is justified ONLY when
+the slices need genuinely different orientation. Theme count is not a reason to split.
 
 ## Process
 
@@ -42,49 +48,65 @@ Folder + manifest conventions: `~/.claude/skills/_ship-shared/manifest-format.md
   Regenerate an existing artifact ONLY if the user explicitly asks.
 - If the pending set is EMPTY → report all research present, set `Next` to `/ship-solution-design`,
   stop.
-- If EXACTLY ONE repo is pending → take the **Single-repo path** (in-thread, Steps 1-5).
-- If MORE THAN ONE repo is pending → take the **Multi-repo path** (orchestrated Workflow, M1-M3).
 - If the user tries to provide a ticket/task description, redirect them to
   `/ship-generate-questions` first.
 
-## Single-repo path (in-thread)
+### Step 1: Build the research plan (cheap reads in the main thread)
 
-Used when exactly one repo is pending (and by standalone per-terminal fallback runs). `<repo>` is
-that pending repo. This path is a PURE ARTIFACT PRODUCER: it writes only `research-<repo>.md` and
-never `manifest.md`, so it stays parallel-safe across terminals.
+For each PENDING repo, read `research-questions-<repo>.md` (small file — safe in the main thread)
+and record: the repo's absolute path under the workspace root, its root `CLAUDE.md` path, and the
+themes (`##` headings) with their questions.
 
-### Step 1: Read questions, CLAUDE.md, and any referenced files
+Then assign agents per repo using the **split rule**:
 
-Read the questions file fully. Then, BEFORE decomposing, locate and read this repo's `CLAUDE.md`
-file(s) in the main context: the repo-root `CLAUDE.md` plus any nested module-level `CLAUDE.md`
-covering the areas the questions touch. In a multi-repo workspace the cwd is the workspace root,
-so a repo's own `CLAUDE.md` is NOT auto-loaded — you MUST read it explicitly. Treat these as the
-highest-signal orientation for the whole run (architecture, conventions, terminology, gotchas).
-If the questions mention specific files, read them in the main context too.
+- **Default: ONE agent for the whole repo**, carrying every theme.
+- **Split only if BOTH hold**: the repo has more than 12 questions, AND its themes partition into
+  subsystems that do not share files (different top-level modules/directories).
+- Group WHOLE themes into slices — never split a theme across agents.
+- Themes touching the same subsystem MUST land in the same slice, however many questions they add.
+- **Cap: 3 agents per repo.** If a partition needs more, merge the smallest slices.
+- Name each slice after the subsystem it owns, not after a theme number.
 
-### Step 2: Decompose into vertical research tasks
+State the plan to the user before dispatching: one line per repo — repo, agent count, and, when
+split, the subsystem boundary that justified it.
 
-Break questions into parallel research tasks. Bias toward vertical slices - trace flows
-end-to-end rather than cataloging horizontal layers.
+### Step 2: Dispatch
 
-Spawn parallel sub-agents:
-- **Explorer agents** to find where components live
-- **Tracer agents** to follow a flow from entry point to data store
-- **Pattern agents** to find how the codebase handles similar concerns elsewhere
+**2a. In-thread** — take this path when exactly one repo is pending AND its plan is a single
+agent. Research it yourself in the main thread and write `research-<repo>.md` per Step 3. This
+also covers standalone per-terminal fallback runs.
 
-Each sub-agent prompt must:
-- Include only its specific questions
-- Name the repo's `CLAUDE.md` file(s) (root + any nested `CLAUDE.md` in its target area) and
-  instruct the agent to read them FIRST and let them guide where it looks and the terminology it uses
+**2b. Parallel agents** — otherwise, dispatch every slice across every pending repo as `Agent`
+calls in a SINGLE message so they run concurrently. The main thread researches NOTHING itself;
+this is what keeps its context clean.
+
+- Unsplit repo → its agent writes `research-<repo>.md` directly (Step 3 template).
+- Split repo → each agent writes its fragment to `<folder>/.research-parts/<repo>-<slice>.md`.
+- Every agent returns ONLY a one-line summary (finding count, open-question count, path written).
+  **Findings must never flow back through an agent return into the main thread.**
+
+**2c. Synthesis (split repos only)** — once a split repo's slice agents are done, dispatch one
+synthesis agent for it. Give it the fragment PATHS, not the fragment text; it reads them from
+disk, writes `research-<repo>.md` per the Step 3 template, connects findings across slices into
+end-to-end flows in `## Data Flow`, then deletes that repo's files under `.research-parts/`.
+It returns only the one-line summary and must not write `manifest.md`.
+
+### Research agent contract
+
+Every research agent prompt (2a's own behaviour included) must:
+
+- Name the repo's `CLAUDE.md` file(s) — root plus any nested `CLAUDE.md` in its target area — and
+  instruct the agent to read them FIRST and let them guide where it looks and the terminology it
+  uses. In a multi-repo workspace the cwd is the workspace root, so a repo's own `CLAUDE.md` is
+  NOT auto-loaded.
+- Carry only that agent's questions, verbatim, grouped under their theme headings.
 - State: "Document what exists. No opinions, no suggestions, no improvements."
-- Request file:line references for all findings
-- Request actual code snippets for patterns found
+- Require a `file:line` reference for EVERY finding.
+- Include a code snippet ONLY where the reference alone cannot convey the pattern, capped at ~15
+  lines. Never paste a whole file, and never invent an example.
+- Trace flows end-to-end where a question touches one, even across into other areas.
 
-### Step 3: Synthesize findings
-
-Wait for ALL sub-agents to complete. Then compile results into a self-contained research document.
-
-### Step 4: Write output
+### Step 3: Output
 
 Write `research-<repo>.md` INTO the ticket folder (not the loose working dir).
 
@@ -110,13 +132,14 @@ Write `research-<repo>.md` INTO the ticket folder (not the loose working dir).
 
 ## Patterns Found
 
-Reusable patterns discovered in the codebase, with code snippets:
+Reusable patterns discovered in the codebase. Reference by file:line; add a short snippet only
+where the reference alone is not enough:
 
 ### [Pattern Name]
 **Where**: `path/to/file.ext:L42-L60`
 **Used by**: [list of consumers]
 ```[language]
-// actual code snippet
+// short real snippet, only if needed
 ```
 
 ## Data Flow
@@ -126,125 +149,39 @@ Reusable patterns discovered in the codebase, with code snippets:
 [Things that could not be determined from code alone]
 ```
 
-### Step 5: Handoff (display only - NOTHING persisted)
+### Step 4: Reconcile + handoff
 
-Write ONLY `research-<repo>.md`. Do NOT edit `manifest.md` - research is parallel-safe (it may
-run in several terminals at once, one repo each) and concurrent manifest writes would race. The
-`Research (repo: <name>)` row is a derived view, reconciled downstream from artifact presence.
+**In-thread / standalone runs (2a)**: write ONLY `research-<repo>.md`. Do NOT edit `manifest.md` —
+research is parallel-safe (it may run in several terminals at once, one repo each) and concurrent
+manifest writes would race. Print the handoff block from in-memory observation: if other seeded
+research rows still lack their artifact, `Next` says "run the remaining repo(s) - parallel
+terminals OK"; when this run observes ALL artifacts present, `Next` is `/ship-solution-design`.
 
-Print the handoff block from in-memory observation:
-- If other seeded research rows still lack their `research-<repo>.md`, `Next` says
-  "run the remaining repo(s) - parallel terminals OK".
-- When this run observes ALL `research-<repo>.md` present, `Next` is `/ship-solution-design`.
+**Dispatching runs (2b/2c)**: you are single-threaded here, so reconciling the manifest is safe.
 
-## Multi-repo path (orchestrated Workflow)
-
-Used when more than one repo is pending. The main thread is the ORCHESTRATOR: build the work-list,
-run ONE Workflow, post-process. It must NOT research anything itself — this is what keeps its
-context clean. (A skill instructing this Workflow call is a legitimate opt-in.)
-
-### M1: Build the work-list (cheap reads in the main thread)
-
-For each PENDING repo: read `research-questions-<repo>.md`, parse it into themes (one entry per
-`##` heading) with that theme's questions, and record the repo's absolute path (under the
-workspace root) and its root `CLAUDE.md` path. Assemble `args`:
-
-```json
-{ "folder": "<abs ticket folder>",
-  "repos": [ { "repo": "api", "repoPath": "<abs path>",
-               "claudeMd": ["<repoPath>/CLAUDE.md"],
-               "themes": [ { "name": "Data models", "questions": ["..."] } ] } ] }
-```
-
-### M2: Run the Workflow (one call)
-
-Invoke the `Workflow` tool with the script below and the `args` from M1. Per repo it pipelines:
-research every theme in parallel (one agent per theme), then synthesize + write
-`research-<repo>.md`. Findings stay in agent/script memory and on disk — only one-line summaries
-return to the main thread.
-
-```js
-export const meta = {
-  name: 'ship-research-multi-repo',
-  description: 'Research pending repos in parallel: per repo, one agent per question theme, then synthesize research-<repo>.md',
-  phases: [
-    { title: 'Research', detail: 'one agent per (repo, theme)' },
-    { title: 'Synthesize', detail: 'one agent per repo writes research-<repo>.md' },
-  ],
-}
-// args: { folder, repos: [{ repo, repoPath, claudeMd:[paths], themes:[{name, questions:[str]}] }] }
-const SUMMARY = {
-  type: 'object',
-  properties: {
-    repo: { type: 'string' },
-    findingCount: { type: 'integer' },
-    openQuestionCount: { type: 'integer' },
-  },
-  required: ['repo', 'findingCount', 'openQuestionCount'],
-  additionalProperties: false,
-}
-// args may arrive parsed OR as a JSON string depending on the Workflow runtime; normalise so
-// the script works either way and never trips pipeline()'s array check on a raw string.
-const cfg = typeof args === 'string' ? JSON.parse(args) : args
-const summaries = await pipeline(
-  cfg.repos,
-  // Stage 1: research every theme of this repo in parallel
-  (repo) => parallel(repo.themes.map(theme => () =>
-    agent(
-      `Research the repo at ${repo.repoPath}. FIRST read its CLAUDE.md (${repo.claudeMd.join(', ')}) ` +
-      `and any nested CLAUDE.md in the area you investigate; let it guide where you look and the terms you use.\n\n` +
-      `Investigate ONLY these questions (theme "${theme.name}"):\n` +
-      theme.questions.map((q, i) => `${i + 1}. ${q}`).join('\n') +
-      `\n\nDocument what EXISTS. No opinions, no suggestions, no improvements. Give file:line refs for every ` +
-      `finding and real code snippets for every pattern. Where a question touches a flow, trace it end-to-end ` +
-      `even across into other areas. Return your findings as a markdown fragment.`,
-      { label: `research:${repo.repo}:${theme.name}`, phase: 'Research' }
-    ).then(text => ({ theme: theme.name, text }))
-  )),
-  // Stage 2: synthesize this repo's findings into research-<repo>.md
-  (themeFindings, repo) =>
-    agent(
-      `Write a self-contained research document for the repo at ${repo.repoPath} to ` +
-      `${cfg.folder}/research-${repo.repo}.md (overwrite if present). Read its CLAUDE.md ` +
-      `(${repo.claudeMd.join(', ')}) for framing and terminology. Use EXACTLY these sections: ` +
-      `Questions Investigated; Summary (3-5 bullets); Detailed Findings (file:line refs); ` +
-      `Patterns Found (file:line + real snippets); Data Flow (connect findings across themes into ` +
-      `end-to-end flows); Open Questions. Document what IS, not what SHOULD BE — no opinions. ` +
-      `Do NOT write manifest.md. Compile these per-theme findings:\n\n` +
-      themeFindings.filter(Boolean).map(f => `### Theme: ${f.theme}\n${f.text}`).join('\n\n') +
-      `\n\nAfter writing the file, return the summary counts for this repo.`,
-      { label: `synth:${repo.repo}`, phase: 'Synthesize', agentType: 'general-purpose', schema: SUMMARY }
-    )
-)
-return summaries
-```
-
-### M3: Post-process (main thread, after the Workflow returns)
-
-- Reconcile from artifact presence (NOT from the returned `summaries`): a repo with
-  `research-<repo>.md` present ⇒ `done`. A synth agent that threw is `null` in `summaries`, so
-  `.filter(Boolean)` it before building the summary table.
+- Reconcile from ARTIFACT PRESENCE, not from what the agents returned: a repo with
+  `research-<repo>.md` present ⇒ `done`.
 - Any repo still MISSING its artifact = failed; report it and leave its row pending. The user can
-  re-run `/ship-research-codebase` to retry ONLY the missing repos (M1 re-includes only pending).
-- When ALL pending artifacts are present, persist the manifest reconcile (you are single-threaded
-  here, so this is safe): mark the `Research (repo: <name>)` rows `done` and rewrite `## Status`
-  with `Next: /ship-solution-design (run in a FRESH thread)`.
-- Print the handoff block (`Next` = `/ship-solution-design`) plus a per-repo summary table (repo,
-  findings, open questions, artifact path).
+  re-run `/ship-research-codebase` to retry ONLY the missing repos (Step 1 re-includes only pending).
+- When ALL pending artifacts are present, mark the `Research (repo: <name>)` rows `done` and
+  rewrite `## Status` with `Next: /ship-solution-design (run in a FRESH thread)`.
+- Print the handoff block plus a per-repo summary table (repo, findings, open questions, artifact
+  path).
 
 ## Rules
 
+- **Batch, don't fan out.** One agent per repo is the default; the split rule is the exception and
+  must be justified by a subsystem boundary, never by question or theme count.
 - **CLAUDE.md is mandatory orientation.** The main thread AND every sub-agent must read the repo's `CLAUDE.md` (root + relevant nested) before researching; it is the highest-signal codebase context and is not auto-loaded from a nested repo.
 - **Document what IS, not what SHOULD BE.** You are a cartographer, not an architect.
 - **No implementation opinions.** If you catch yourself writing "should", "could be improved", or "consider", delete it.
-- **Patterns must include real code.** Every pattern needs a snippet with file:line. Never invent examples.
+- **Patterns must be real.** Reference every pattern by file:line; snippets are optional, short, and never invented.
 - **Self-contained output.** The research doc must be usable in a fresh context window with zero prior conversation.
 - **Vertical over horizontal.** Trace flows end-to-end.
-- **Research agents never write `manifest.md`.** All Workflow research/synthesis agents and the
-  single-repo/standalone paths are pure artifact producers — they write only `research-<repo>.md`.
-  ONLY the multi-repo orchestrator (single-threaded main thread) persists the manifest reconcile,
-  and ONLY after every artifact has landed.
-- **Orchestrator stays lean.** On the multi-repo path the synthesis agents WRITE the artifact and
-  return only one-line summaries; full findings must NEVER flow back through the Workflow return
-  into the main thread.
+- **Findings live on disk, not in returns.** Agents write files and return one-line summaries;
+  synthesis reads fragment paths, never pasted fragment text.
+- **Research agents never write `manifest.md`.** All research and synthesis agents, and the
+  in-thread/standalone paths, are pure artifact producers — they write only `research-<repo>.md`
+  (or their `.research-parts/` fragment). ONLY a dispatching main thread persists the manifest
+  reconcile, and ONLY after every artifact has landed.
 - **Stay under 55 instructions total.**

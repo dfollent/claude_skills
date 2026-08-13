@@ -21,7 +21,7 @@ Folder + manifest conventions: `~/.claude/skills/_ship-shared/manifest-format.md
 | # | Stage | Skill |
 |---|-------|-------|
 | 1 | Questions | `ship-generate-questions` (repo scoping + per-repo questions) |
-| 2 | Research | `ship-research-codebase` (one run per repo, parallel-safe) |
+| 2 | Research | `ship-research-codebase` (ONE run covers all repos; per-repo runs parallel-safe) |
 | 3 | Solution design | `ship-solution-design` |
 | 4 | Work breakdown | `ship-work-breakdown` |
 | 5 | Create plan | `ship-create-plan` |
@@ -68,13 +68,14 @@ resets to 0 in every fresh thread (it is in-context only, never persisted).
 
 ## Continue rules (applied after a step completes)
 
-- **questions** → offer to continue straight into research IN THIS THREAD by running the first
-  pending `Research (repo: <name>)` row. If the user declines, stop. (Research itself stops after
-  each repo, so continuing here advances exactly ONE repo, not the whole research stage.)
+- **questions** → offer to continue straight into research IN THIS THREAD by running
+  `/ship-research-codebase` ONCE. If the user declines, stop. (That single run covers EVERY
+  pending `Research (repo: <name>)` row, so continuing here completes the whole research stage.)
 
-- **research** → researches ALL pending repos in ONE run: an orchestrated Workflow fan-out when
-  more than one repo is pending, in-thread when exactly one. On the multi-repo path the
-  orchestrator (single-threaded) persists the `Research` reconcile and advances `Next` to
+- **research** → researches ALL pending repos in ONE run: parallel research agents (one per repo
+  by default) when more than one repo is pending, in-thread when a single pending repo also plans
+  to a single agent. On the dispatching
+  path the main thread (single-threaded) persists the `Research` reconcile and advances `Next` to
   `/ship-solution-design` once every `research-<repo>.md` has landed; then stop and hand off to
   design (fresh thread). Standalone fallback still works: the user may instead run
   `/ship-research-codebase` per repo in separate terminals (artifact-only, no manifest write); on
